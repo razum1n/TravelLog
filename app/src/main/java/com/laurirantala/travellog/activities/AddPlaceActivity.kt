@@ -1,6 +1,7 @@
 package com.laurirantala.travellog.activities
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.DatePickerDialog
@@ -10,10 +11,13 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.location.Location
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
@@ -22,6 +26,10 @@ import android.widget.Toast
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
 import com.google.android.libraries.places.api.Places
 import com.google.android.libraries.places.api.model.Place
 import com.google.android.libraries.places.widget.Autocomplete
@@ -36,6 +44,7 @@ import com.laurirantala.travellog.database.PlaceEntity
 import com.laurirantala.travellog.database.PlacesApp
 import com.laurirantala.travellog.database.PlacesDao
 import com.laurirantala.travellog.databinding.ActivityAddPlaceBinding
+import com.laurirantala.travellog.utils.GetAddressFromLatLng
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -54,6 +63,8 @@ class AddPlaceActivity : AppCompatActivity(), View.OnClickListener {
     private var latitude: Double = 0.0
     private var longitude: Double = 0.0
     private lateinit var placesDao: PlacesDao
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
 
     private var placeDetails: PlaceEntity? = null
 
@@ -110,6 +121,8 @@ class AddPlaceActivity : AppCompatActivity(), View.OnClickListener {
             onBackPressed()
         }
 
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
         if (!Places.isInitialized()) {
             Places.initialize(
                 this@AddPlaceActivity,
@@ -146,6 +159,49 @@ class AddPlaceActivity : AppCompatActivity(), View.OnClickListener {
         binding?.tvAddImage?.setOnClickListener(this)
         binding?.btnSave?.setOnClickListener(this)
         binding?.etLocation?.setOnClickListener(this)
+        binding?.tvSelectCurrentLocation?.setOnClickListener(this)
+    }
+
+
+    private fun isLocationEnabled(): Boolean {
+        val locationManager: LocationManager =
+            getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) || locationManager.isProviderEnabled(
+            LocationManager.NETWORK_PROVIDER
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestNewLocationData(){
+        val locationRequest = com.google.android.gms.location.LocationRequest.create().apply {
+            priority = com.google.android.gms.location.LocationRequest.PRIORITY_HIGH_ACCURACY
+            interval = 1000
+            numUpdates = 1
+        }
+        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallBack,
+            Looper.myLooper()!!
+        )
+    }
+
+    private val locationCallBack = object : LocationCallback(){
+        override fun onLocationResult(locationResult: LocationResult) {
+            val lastLocation: Location = locationResult.lastLocation
+            latitude = lastLocation.latitude
+            longitude = lastLocation.longitude
+
+            val addressTask = GetAddressFromLatLng(this@AddPlaceActivity, latitude, longitude)
+            addressTask.setAddressListener(object: GetAddressFromLatLng.AddressListener {
+                override fun onAddressFound(address: String?) {
+                    binding?.etLocation?.setText(address)
+                }
+
+                override fun onError() {
+                    Log.e("Get Address::", "Something went wrong with getting address")
+                }
+
+            })
+            addressTask.getAddress()
+        }
     }
 
     override fun onClick(v: View?) {
@@ -177,6 +233,36 @@ class AddPlaceActivity : AppCompatActivity(), View.OnClickListener {
             }
             binding?.etLocation?.id -> {
                 startGoogleMaps()
+            }
+            binding?.tvSelectCurrentLocation?.id -> {
+                if (!isLocationEnabled()) {
+                    Toast.makeText(
+                        this,
+                        "Your location provider is turned off. Please turn it on",
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                    val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                    startActivity(intent)
+                } else {
+                    Dexter.withActivity(this).withPermissions(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    ).withListener(object : MultiplePermissionsListener {
+                        override fun onPermissionsChecked(report: MultiplePermissionsReport?) {
+                            if (report!!.areAllPermissionsGranted()) {
+                                requestNewLocationData()
+                            }
+                        }
+                        override fun onPermissionRationaleShouldBeShown(
+                            permissions: MutableList<PermissionRequest>?,
+                            token: PermissionToken?
+                        ) {
+                            showRationalDialogForPermissions()
+                        }
+                    }).onSameThread()
+                        .check()
+                }
             }
         }
     }
